@@ -1,0 +1,189 @@
+From 296fb88cf466fe07fffd1b9d2f42a33c420ceb1d Mon Sep 17 00:00:00 2001
+From: Mike Sharov <msharov@users.sourceforge.net>
+Date: Sun, 25 Mar 2018 11:07:10 -0400
+Subject: [PATCH] Update for kernel 4.15
+
+---
+ hal/OUTSRC/odm_types.h        |  8 +++++
+ include/osdep_service.h       |  6 +++-
+ include/osdep_service_linux.h | 59 +++++++++++++++++++++++++----------
+ 3 files changed, 56 insertions(+), 17 deletions(-)
+
+diff --git a/hal/OUTSRC/odm_types.h b/hal/OUTSRC/odm_types.h
+index 4520f89..849aa8f 100644
+--- a/hal/OUTSRC/odm_types.h
++++ b/hal/OUTSRC/odm_types.h
+@@ -133,7 +133,11 @@ typedef enum _RT_SPINLOCK_TYPE{
+ 
+ 	typedef struct rtl8192cd_priv	*prtl8192cd_priv;
+ 	typedef struct stat_info		STA_INFO_T,*PSTA_INFO_T;
++#if defined (LINUX_VERSION_CODE) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	typedef struct legacy_timer_emu		RT_TIMER, *PRT_TIMER;
++#else
+ 	typedef struct timer_list		RT_TIMER, *PRT_TIMER;
++#endif
+ 	typedef  void *				RT_TIMER_CALL_BACK;
+ 
+ 	#define DEV_BUS_TYPE		RT_PCI_INTERFACE
+@@ -223,7 +227,11 @@ typedef enum _RT_SPINLOCK_TYPE{
+ 		#define	ODM_ENDIAN_TYPE			ODM_ENDIAN_BIG
+ 	#endif
+ 	
++#if defined (LINUX_VERSION_CODE) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	typedef struct legacy_timer_emu		RT_TIMER, *PRT_TIMER;
++#else
+ 	typedef struct timer_list		RT_TIMER, *PRT_TIMER;
++#endif
+ 	typedef  void *				RT_TIMER_CALL_BACK;
+ 	#define	STA_INFO_T			struct sta_info
+ 	#define	PSTA_INFO_T		struct sta_info *
+diff --git a/include/osdep_service.h b/include/osdep_service.h
+index 97249ba..28c0ae9 100644
+--- a/include/osdep_service.h
++++ b/include/osdep_service.h
+@@ -227,7 +227,11 @@ extern void rtw_init_timer(_timer *ptimer, void *padapter, void *pfunc);
+ __inline static unsigned char _cancel_timer_ex(_timer *ptimer)
+ {
+ #ifdef PLATFORM_LINUX
+-	return del_timer_sync(ptimer);
++	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++		return del_timer_sync(&ptimer->t);
++	#else
++		return del_timer_sync(ptimer);
++	#endif
+ #endif
+ #ifdef PLATFORM_FREEBSD
+ 	_cancel_timer(ptimer,0);
+diff --git a/include/osdep_service_linux.h b/include/osdep_service_linux.h
+index 73c6c59..44fa5d5 100644
+--- a/include/osdep_service_linux.h
++++ b/include/osdep_service_linux.h
+@@ -1,7 +1,7 @@
+ /******************************************************************************
+  *
+  * Copyright(c) 2007 - 2013 Realtek Corporation. All rights reserved.
+- *                                        
++ *
+  * This program is free software; you can redistribute it and/or modify it
+  * under the terms of version 2 of the GNU General Public License as
+  * published by the Free Software Foundation.
+@@ -73,10 +73,10 @@
+ 	#include <asm/io.h>
+ #endif
+ 
+-#ifdef CONFIG_IOCTL_CFG80211	
+-//	#include <linux/ieee80211.h>        
++#ifdef CONFIG_IOCTL_CFG80211
++//	#include <linux/ieee80211.h>
+         #include <net/ieee80211_radiotap.h>
+-	#include <net/cfg80211.h>	
++	#include <net/cfg80211.h>
+ #endif //CONFIG_IOCTL_CFG80211
+ 
+ #ifdef CONFIG_TCP_CSUM_OFFLOAD_TX
+@@ -117,23 +117,31 @@
+ #else
+ 	typedef struct semaphore	_mutex;
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	typedef struct legacy_timer_emu {
++		struct timer_list t;
++		void (*function)(unsigned long);
++		unsigned long data;
++	} _timer;
++#else
+ 	typedef struct timer_list _timer;
++#endif //(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+ 
+ 	struct	__queue	{
+-		struct	list_head	queue;	
++		struct	list_head	queue;
+ 		_lock	lock;
+ 	};
+ 
+ 	typedef	struct sk_buff	_pkt;
+ 	typedef unsigned char	_buffer;
+-	
++
+ 	typedef struct	__queue	_queue;
+ 	typedef struct	list_head	_list;
+ 	typedef	int	_OS_STATUS;
+ 	//typedef u32	_irqL;
+ 	typedef unsigned long _irqL;
+ 	typedef	struct	net_device * _nic_hdl;
+-	
++
+ 	typedef void*		_thread_hdl_;
+ 	typedef int		thread_return;
+ 	typedef void*	thread_context;
+@@ -179,18 +187,18 @@ static inline unsigned char *skb_end_pointer(const struct sk_buff *skb)
+ __inline static _list *get_next(_list	*list)
+ {
+ 	return list->next;
+-}	
++}
+ 
+ __inline static _list	*get_list_head(_queue	*queue)
+ {
+ 	return (&(queue->queue));
+ }
+ 
+-	
++
+ #define LIST_CONTAINOR(ptr, type, member) \
+-        ((type *)((char *)(ptr)-(SIZE_T)(&((type *)0)->member)))	
++        ((type *)((char *)(ptr)-(SIZE_T)(&((type *)0)->member)))
++
+ 
+-        
+ __inline static void _enter_critical(_lock *plock, _irqL *pirqL)
+ {
+ 	spin_lock_irqsave(plock, *pirqL);
+@@ -250,23 +258,42 @@ __inline static void rtw_list_delete(_list *plist)
+ 
+ #define RTW_TIMER_HDL_ARGS void *FunctionContext
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++static void legacy_timer_emu_func(struct timer_list *t)
++{
++	struct legacy_timer_emu *lt = from_timer(lt, t, t);
++	lt->function(lt->data);
++}
++#endif //(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++
+ __inline static void _init_timer(_timer *ptimer,_nic_hdl nic_hdl,void *pfunc,void* cntx)
+ {
+-	//setup_timer(ptimer, pfunc,(u32)cntx);	
++	//setup_timer(ptimer, pfunc,(u32)cntx);
+ 	ptimer->function = pfunc;
+ 	ptimer->data = (unsigned long)cntx;
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	timer_setup(&ptimer->t, legacy_timer_emu_func, 0);
++#else
+ 	init_timer(ptimer);
++#endif //(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+ }
+ 
+ __inline static void _set_timer(_timer *ptimer,u32 delay_time)
+-{	
+-	mod_timer(ptimer , (jiffies+(delay_time*HZ/1000)));	
++{
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	mod_timer(&ptimer->t, (jiffies+(delay_time * HZ / 1000)));
++#else
++	mod_timer(ptimer , (jiffies+(delay_time*HZ/1000)));
++#endif //(LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
+ }
+ 
+ __inline static void _cancel_timer(_timer *ptimer,u8 *bcancelled)
+ {
+-	del_timer_sync(ptimer); 	
+-	*bcancelled=  _TRUE;//TRUE ==1; FALSE==0
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0))
++	*bcancelled = del_timer_sync(&ptimer->t) == 1 ? 1 : 0;
++#else
++	*bcancelled = del_timer_sync(ptimer) == 1 ? 1 : 0;
++#endif
+ }
+ 
+ 
